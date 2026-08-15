@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import torch
 
-from moe_nexus.optimizer import LoadBalancer, RouterConfig, TopKRouter
+from moe_nexus.cache_engine import CPUCacheDecoder, NumberTokenizer
+from moe_nexus.optimizer import LoadBalancer
 
 
 @dataclass
@@ -25,23 +26,23 @@ class InferenceEngine:
     def __init__(
         self,
         model: torch.nn.Module,
-        router: TopKRouter,
+        decoder: CPUCacheDecoder,
         load_balancer: Optional[LoadBalancer] = None,
         device: str = "cpu",
     ) -> None:
         self.model = model
-        self.router = router
+        self.decoder = decoder
         self.load_balancer = load_balancer
         self.device = torch.device(device)
         self.model.to(self.device)
         self.model.eval()
 
     @torch.no_grad()
-    def generate(self, input_ids: torch.Tensor, config: GenerationConfig) -> torch.Tensor:
+    def generate(self, token_ids: torch.Tensor, config: GenerationConfig) -> torch.Tensor:
         if self.load_balancer is not None:
             self.load_balancer.reset()
 
-        generated = input_ids.clone()
+        generated = token_ids.clone()
         past_key_values = None
 
         for _ in range(config.max_new_tokens):
@@ -77,9 +78,13 @@ class InferenceEngine:
 
         return generated
 
+    def generate_text(self, token_ids: torch.Tensor, config: GenerationConfig) -> str:
+        token_ids = self.generate(token_ids, config)
+        return self.decoder.decode(token_ids[0])
+
     def benchmark(
         self,
-        input_ids: torch.Tensor,
+        token_ids: torch.Tensor,
         config: GenerationConfig,
         warmup_steps: int = 3,
         measure_steps: int = 10,
@@ -87,13 +92,14 @@ class InferenceEngine:
         self.model.eval()
         with torch.no_grad():
             for _ in range(warmup_steps):
-                _ = self.generate(input_ids, config)
+                _ = self.generate(token_ids, config)
 
             torch.cuda.synchronize() if self.device.type == "cuda" else None
             start = time.perf_counter()
 
             for _ in range(measure_steps):
-                _ = self.generate(input_ids, config)
+                token_output = self.generate(token_ids, config)
+                _ = self.decoder.decode_batch(token_output)
 
             torch.cuda.synchronize() if self.device.type == "cuda" else None
             elapsed = time.perf_counter() - start
