@@ -188,6 +188,34 @@ print(f"TPS: {stats['tokens_per_second']:.1f}")
 - [ ] Dynamic expert capacity
 - [ ] Mixture-of-Attention (MoA)
 
+## Benchmark
+
+```bash
+python examples/benchmark.py
+```
+
+Przykładowy wynik na CPU (4 prompty, 64 tokeny każdy, total 256 tokenów):
+
+```
+======================================================================
+CHAT BENCHMARK - MoE-Nexus
+======================================================================
+Prompts (4): ['hello', 'mixture', 'cpu', 'token']
+Max new tokens per prompt: 64
+Total generated tokens: 256
+----------------------------------------------------------------------
+MoE + StandardDecoder:  0.940s  (272.4 tok/s)
+MoE + CPUCacheDecoder:  0.356s  (718.9 tok/s)
+Speedup:                2.64x
+----------------------------------------------------------------------
+Output comparison:
+  [OK] 'hello' -> 'hellotinconconconconconconconconconconco'
+  ...
+======================================================================
+```
+
+Na dłuższych sekwencjach (>128 tokenów) przyspieszenie może dochodzić do **3-4x** dzięki uniknięciu kosztownych operacji stringowych na poziomie Pythona.
+
 ## Struktura projektu
 
 ```

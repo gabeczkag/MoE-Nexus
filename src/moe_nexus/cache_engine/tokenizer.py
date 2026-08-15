@@ -68,7 +68,7 @@ class NumberTokenizer:
         for token in tokens:
             if token in self._int_to_char:
                 char = self._int_to_char[token]
-                if char in (self.pad_token, self.unk_token):
+                if char in (self.pad_token, self.unk_token, self.bos_token, self.eos_token):
                     continue
                 chars.append(char)
         return "".join(chars)

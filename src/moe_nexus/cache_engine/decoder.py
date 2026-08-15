@@ -23,18 +23,28 @@ class CPUCacheDecoder:
         codepoints = np.take(self._lookup, tokens)
         mask = codepoints != 0
         valid = codepoints[mask]
-        return valid.astype(np.uint32).tobytes().decode("utf-32-le")
+        if valid.size == 0:
+            return ""
+        if valid.max() <= 255:
+            return valid.astype(np.uint8).tobytes().decode("utf-8", errors="ignore")
+        return "".join(chr(int(cp)) for cp in valid)
 
     def decode_batch(self, token_batch: Union[torch.Tensor, np.ndarray]) -> List[str]:
         if isinstance(token_batch, torch.Tensor):
             token_batch = token_batch.cpu().numpy()
 
         codepoints = np.take(self._lookup, token_batch)
-        mask = codepoints != 0
-        return [
-            row[mask[i]].astype(np.uint32).tobytes().decode("utf-32-le")
-            for i, row in enumerate(codepoints)
-        ]
+        results = []
+        for row in codepoints:
+            mask = row != 0
+            valid = row[mask]
+            if valid.size == 0:
+                results.append("")
+            elif valid.max() <= 255:
+                results.append(valid.astype(np.uint8).tobytes().decode("utf-8", errors="ignore"))
+            else:
+                results.append("".join(chr(int(cp)) for cp in valid))
+        return results
 
     def decode_stream(self, token_stream: List[int]) -> str:
         buffer = np.zeros(len(token_stream), dtype=np.int32)
