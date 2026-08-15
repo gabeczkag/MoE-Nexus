@@ -40,7 +40,10 @@ class NumberTokenizer:
 
         self._lookup_array = np.zeros(max(self._int_to_char.keys()) + 1, dtype=np.uint32)
         for idx, char in self._int_to_char.items():
-            self._lookup_array[idx] = ord(char)
+            if len(char) == 1:
+                self._lookup_array[idx] = ord(char)
+            else:
+                self._lookup_array[idx] = 0
 
     def encode(self, text: str, add_bos: bool = False, add_eos: bool = False) -> List[int]:
         tokens: List[int] = []

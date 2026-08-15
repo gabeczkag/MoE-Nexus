@@ -27,14 +27,20 @@ def compute_expert_sparsity(
 
 def compute_routing_entropy(
     topk_scores: torch.Tensor,
+    topk_indices: torch.Tensor,
     num_experts: int,
 ) -> float:
     B, T, K = topk_scores.shape
     flat_scores = topk_scores.reshape(-1, K)
+    flat_indices = topk_indices.reshape(-1, K)
 
     probs = torch.zeros(flat_scores.shape[0], num_experts, device=flat_scores.device)
     for k in range(K):
-        probs.scatter_add_(1, flat_scores[:, k].long().unsqueeze(1), flat_scores[:, k].unsqueeze(1))
+        probs.scatter_add_(
+            1,
+            flat_indices[:, k].unsqueeze(1),
+            flat_scores[:, k].unsqueeze(1),
+        )
 
     probs = probs / (probs.sum(dim=-1, keepdim=True) + 1e-8)
     entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1).mean()

@@ -73,7 +73,7 @@ class InferenceEngine:
 
             generated = torch.cat([generated, next_token], dim=-1)
 
-            if config.eos_token_id is not None and next_token.item() == config.eos_token_id:
+            if config.eos_token_id is not None and (next_token == config.eos_token_id).any():
                 break
 
         return generated

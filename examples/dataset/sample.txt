@@ -1,0 +1,19 @@
+"""Sample dataset: plain-text sentences for CPU-cache MoE training/inference."""
+
+TEXT_LINES = [
+    "hello world",
+    "mixture of experts",
+    "cpu cache optimization",
+    "token ids are numbers",
+    "decode with numpy lookup",
+    "neural network routing",
+    "sparse activation improves speed",
+    "load balancing matters",
+    "top k expert selection",
+    "expert choice routing",
+    "z loss regularization",
+    "kv cache speeds inference",
+    "temperature controls sampling",
+    "repetition penalty helps",
+    "batch processing throughput",
+]

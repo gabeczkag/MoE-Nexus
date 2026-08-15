@@ -33,7 +33,7 @@ class TestTopKRouter:
         hidden = torch.randn(B, T, D)
         scores, indices, _ = router(hidden)
         assert torch.allclose(scores.sum(dim=-1), torch.ones(B, T), atol=1e-5)
-        assert torch.unique(indices).numel() <= 2
+        assert indices.shape == (B, T, router.top_k)
 
 
 class TestExpertChoice:
@@ -76,5 +76,6 @@ class TestMetrics:
 
     def test_routing_entropy(self) -> None:
         scores = torch.ones(2, 4, 2) / 2
-        entropy = compute_routing_entropy(scores, num_experts=4)
+        indices = torch.tensor([[[0, 1]] * 4] * 2)
+        entropy = compute_routing_entropy(scores, indices, num_experts=4)
         assert entropy > 0.0

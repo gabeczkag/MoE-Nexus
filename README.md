@@ -209,6 +209,11 @@ MoE-Nexus/
 │   ├── test_optimizer.py
 │   └── test_cache_engine.py
 ├── examples/
+│   ├── dataset/sample.txt
+│   ├── model/config.py
+│   ├── train/train_moe.py
+│   ├── run/run_moe.py
+│   ├── logs/             # wygenerowane logi z treningu i inference
 │   └── cache_moe_demo.py
 ├── docs/
 │   └── assets/
@@ -218,6 +223,29 @@ MoE-Nexus/
 ├── pyproject.toml
 ├── LICENSE                    # GNU GPL v3
 └── README.md
+```
+
+## Przykłady
+
+### Trening i inference
+
+```bash
+# 1. Trening modelu
+python examples/train/train_moe.py
+
+# Logi trafiają do examples/logs/train.log
+# Checkpoint modelu: examples/model/moe_checkpoint.pt
+
+# 2. Uruchomienie inference
+python examples/run/run_moe.py
+
+# Logi trafiają do examples/logs/run.log
+```
+
+### Demo szybkiego startu
+
+```bash
+python examples/cache_moe_demo.py
 ```
 
 ## Testy

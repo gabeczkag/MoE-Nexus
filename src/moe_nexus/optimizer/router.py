@@ -81,12 +81,10 @@ class ExpertChoice(BaseRouter):
         scores = F.softmax(logits, dim=-1)
 
         flat_scores = scores.view(B * T, self.num_experts)
-        topk_scores, topk_indices = torch.topk(
-            flat_scores.transpose(0, 1), self.top_k, dim=-1
-        )
-        topk_scores = topk_scores.transpose(0, 1).contiguous()
-        topk_indices = topk_indices.transpose(0, 1).contiguous()
+        topk_scores, topk_indices = torch.topk(flat_scores, self.top_k, dim=-1)
         topk_scores = topk_scores / topk_scores.sum(dim=-1, keepdim=True)
+        topk_scores = topk_scores.view(B, T, self.top_k)
+        topk_indices = topk_indices.view(B, T, self.top_k)
 
         return topk_scores, topk_indices, None
 
