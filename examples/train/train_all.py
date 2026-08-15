@@ -19,6 +19,31 @@ from moe_nexus.optimizer import RouterConfig, TopKRouter
 from examples.model.config import ModelConfig
 
 
+def _moe_combine(
+    hidden: torch.Tensor,
+    scores: torch.Tensor,
+    indices: torch.Tensor,
+    experts: "torch.nn.ModuleList",
+) -> torch.Tensor:
+    """Wektoryzowane połączenie wyjść ekspertów (gather + ważona suma).
+
+    Zamiast podwójnej pętli Pythona z maskowaniem boolowskim i fancy indexing,
+    liczymy wyjścia wszystkich ekspertów naraz i wybieramy je przez torch.gather.
+    Wynik jest numerycznie identyczny z wersją scalarną.
+    """
+    b, t, d = hidden.shape
+    bt = b * t
+    h = hidden.reshape(bt, d)
+    expert_outs = torch.stack([expert(h) for expert in experts], dim=0)  # [E, BT, D]
+    idx = indices.reshape(bt, -1)  # [BT, K]
+    sc = scores.reshape(bt, -1)  # [BT, K]
+    rows = torch.arange(bt, device=h.device)
+    out = torch.zeros_like(h)
+    for k in range(idx.shape[1]):
+        out = out + sc[:, k : k + 1] * expert_outs[idx[:, k], rows]
+    return out.reshape(b, t, d)
+
+
 @dataclass
 class TrainConfig:
     epochs: int = 20
@@ -34,6 +59,7 @@ class DenseModel(nn.Module):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, hidden_dim)
         self.head = nn.Linear(hidden_dim, vocab_size)
+        self.stateless = True
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         hidden = self.embedding(token_ids)
@@ -47,16 +73,12 @@ class VanillaMoEModel(nn.Module):
         self.router = TopKRouter(RouterConfig(num_experts=num_experts, top_k=top_k, hidden_dim=hidden_dim))
         self.experts = nn.ModuleList([nn.Linear(hidden_dim, hidden_dim) for _ in range(num_experts)])
         self.head = nn.Linear(hidden_dim, vocab_size)
+        self.stateless = True
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         hidden = self.embedding(token_ids)
         scores, indices, _ = self.router(hidden)
-        expert_out = torch.zeros_like(hidden)
-        for k in range(self.router.top_k):
-            for e in range(self.router.num_experts):
-                mask = (indices[:, :, k] == e)
-                if mask.any():
-                    expert_out[mask] += scores[mask, k].unsqueeze(-1) * self.experts[e](hidden[mask])
+        expert_out = _moe_combine(hidden, scores, indices, self.experts)
         return self.head(expert_out)
 
 
@@ -67,19 +89,12 @@ class MoENexusModel(nn.Module):
         self.router = TopKRouter(RouterConfig(num_experts=num_experts, top_k=top_k, hidden_dim=hidden_dim))
         self.experts = nn.ModuleList([nn.Linear(hidden_dim, hidden_dim) for _ in range(num_experts)])
         self.head = nn.Linear(hidden_dim, vocab_size)
+        self.stateless = True
 
     def forward(self, token_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         hidden = self.embedding(token_ids)
         scores, indices, aux_loss = self.router(hidden)
-        expert_out = torch.zeros_like(hidden)
-        for k in range(self.router.top_k):
-            expert_idx = indices[:, :, k]
-            for e in range(self.router.num_experts):
-                mask = (expert_idx == e)
-                if mask.any():
-                    selected = hidden[mask]
-                    out = self.experts[e](selected)
-                    expert_out[mask] += scores[mask, k].unsqueeze(-1) * out
+        expert_out = _moe_combine(hidden, scores, indices, self.experts)
         logits_out = self.head(expert_out)
         return logits_out, aux_loss
 

@@ -45,10 +45,15 @@ class InferenceEngine:
 
         generated = token_ids.clone()
         past_key_values = None
+        stateless = getattr(self.model, "stateless", False)
 
         for step in range(config.max_new_tokens):
+            if stateless and past_key_values is None and generated.shape[1] > 1:
+                model_inputs = generated[:, -1:]
+            else:
+                model_inputs = generated[:, -1:] if past_key_values is not None else generated
             model_outputs = self.model(
-                input_ids=generated[:, -1:] if past_key_values is not None else generated,
+                input_ids=model_inputs,
                 past_key_values=past_key_values,
                 use_cache=True,
             )

@@ -14,39 +14,35 @@ class CPUCacheDecoder:
         self._vocab_size = len(self._lookup)
 
     def decode(self, tokens: Union[List[int], torch.Tensor, np.ndarray]) -> str:
-        if isinstance(tokens, torch.Tensor):
-            tokens = tokens.cpu().numpy()
-        elif isinstance(tokens, list):
-            tokens = np.asarray(tokens, dtype=np.int32)
-
-        tokens = np.clip(tokens, 0, self._vocab_size - 1)
-        codepoints = np.take(self._lookup, tokens)
-        mask = codepoints != 0
-        valid = codepoints[mask]
+        arr = self._to_int_array(tokens)
+        codepoints = np.take(self._lookup, arr)
+        valid = codepoints[codepoints != 0]
         if valid.size == 0:
             return ""
-        if valid.max() <= 255:
-            return valid.astype(np.uint8).tobytes().decode("utf-8", errors="ignore")
-        return "".join(chr(int(cp)) for cp in valid)
+        return valid.astype(np.uint8, copy=False).tobytes().decode("utf-8", errors="ignore")
 
     def decode_batch(self, token_batch: Union[torch.Tensor, np.ndarray]) -> List[str]:
         if isinstance(token_batch, torch.Tensor):
             token_batch = token_batch.cpu().numpy()
-
-        codepoints = np.take(self._lookup, token_batch)
-        results = []
-        for row in codepoints:
-            mask = row != 0
-            valid = row[mask]
-            if valid.size == 0:
-                results.append("")
-            elif valid.max() <= 255:
-                results.append(valid.astype(np.uint8).tobytes().decode("utf-8", errors="ignore"))
-            else:
-                results.append("".join(chr(int(cp)) for cp in valid))
-        return results
+        codepoints = np.take(self._lookup, np.asarray(token_batch, dtype=np.int32))
+        rows = codepoints[codepoints != 0]
+        # Rozdziel wyniki per wiersz bez pętli Pythona po znakach:
+        # 'rows' to spłaszczony ciąg ważnych kodepunktów całego batcha,
+        # dzielimy go na oryginalne wiersze za pomocą znaczników długości.
+        lengths = (codepoints != 0).sum(axis=1)
+        out: List[str] = []
+        start = 0
+        for length in lengths:
+            seg = rows[start : start + int(length)]
+            start += int(length)
+            out.append(seg.astype(np.uint8, copy=False).tobytes().decode("utf-8", errors="ignore") if seg.size else "")
+        return out
 
     def decode_stream(self, token_stream: List[int]) -> str:
-        buffer = np.zeros(len(token_stream), dtype=np.int32)
-        buffer[:] = token_stream
-        return self.decode(buffer)
+        return self.decode(token_stream)
+
+    @staticmethod
+    def _to_int_array(tokens) -> np.ndarray:
+        if isinstance(tokens, torch.Tensor):
+            tokens = tokens.cpu().numpy()
+        return np.asarray(tokens, dtype=np.int32)

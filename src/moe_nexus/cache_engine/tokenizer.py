@@ -45,12 +45,22 @@ class NumberTokenizer:
             else:
                 self._lookup_array[idx] = 0
 
+        # Wektoryzowana tablica kodowania: bajt -> token id.
+        self._encode_lut = np.array(
+            [self._char_to_int.get(chr(b), self.unk_token_id) for b in range(256)],
+            dtype=np.int32,
+        )
+
     def encode(self, text: str, add_bos: bool = False, add_eos: bool = False) -> List[int]:
         tokens: List[int] = []
         if add_bos:
             tokens.append(self.bos_token_id)
-        for char in text:
-            tokens.append(self._char_to_int.get(char, self.unk_token_id))
+        if text.isascii():
+            arr = np.frombuffer(text.encode("ascii"), dtype=np.uint8)
+            tokens.extend(self._encode_lut[arr].tolist())
+        else:
+            for char in text:
+                tokens.append(self._char_to_int.get(char, self.unk_token_id))
         if add_eos:
             tokens.append(self.eos_token_id)
         return tokens
