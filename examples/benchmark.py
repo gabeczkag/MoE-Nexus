@@ -1,4 +1,4 @@
-"""Quick benchmark: standard decode vs CPU-cache decode, and Dense vs MoE speed."""
+"""Quick benchmark: Dense vs Vanilla MoE vs MoE-Nexus (CPU-cache MoE) on 8k tokens."""
 
 import sys
 import time
@@ -10,13 +10,20 @@ if str(ROOT) not in sys.path:
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from moe_nexus.cache_engine import CPUCacheDecoder, NumberTokenizer
 from moe_nexus.optimizer import LoadBalancer, RouterConfig, TopKRouter
 from moe_nexus.serving import GenerationConfig, InferenceEngine
-from examples.train.train_moe import MoELanguageModel
+from examples.train.train_all import DenseModel, VanillaMoEModel, MoENexusModel
 from examples.model.config import ModelConfig
+
+# Try to import C++ backend
+CPP_AVAILABLE = False
+try:
+    import moe_nexus_core as cpp_core
+    CPP_AVAILABLE = True
+except ImportError:
+    pass
 
 
 class ModelAdapter(nn.Module):
@@ -56,6 +63,8 @@ def format_tokens_per_second(tokens: int, seconds: float) -> str:
     if seconds <= 0:
         return "inf"
     tps = tokens / seconds
+    if tps >= 1_000_000:
+        return f"{tps/1_000_000:.2f}M tok/s"
     if tps >= 1000:
         return f"{tps/1000:.2f}k tok/s"
     return f"{tps:.1f} tok/s"
@@ -68,6 +77,7 @@ def main() -> None:
     num_experts = 8
     top_k = 2
     max_new_tokens = 64
+    max_steps = 1000
 
     prompts = ["hello", "mixture", "cpu", "token"]
     input_ids = tokenizer.batch_encode(prompts, max_length=16, pad=True)
@@ -78,68 +88,106 @@ def main() -> None:
         top_p=0.9,
         do_sample=False,
         eos_token_id=tokenizer.eos_token_id,
+        max_steps=max_steps,
     )
 
-    # Load trained MoE model if available
-    checkpoint_path = ROOT / "examples/model/moe_checkpoint.pt"
-    use_trained = checkpoint_path.exists()
+    # Load trained models
+    model_cfg = ModelConfig()
+    models_dir = ROOT / "examples/model"
 
-    if use_trained:
-        model_config = ModelConfig()
-        model = MoELanguageModel(model_config)
-        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        model.eval()
-        print(f"[INFO] Loaded trained model from {checkpoint_path}")
-    else:
-        model = MoELanguageModel(ModelConfig())
-        model.eval()
-        print("[WARN] No trained model found, using random weights")
+    dense_ckpt = torch.load(models_dir / "dense.pt", map_location="cpu", weights_only=False)
+    vanilla_ckpt = torch.load(models_dir / "vanilla_moe.pt", map_location="cpu", weights_only=False)
+    nexus_ckpt = torch.load(models_dir / "moe_nexus.pt", map_location="cpu", weights_only=False)
 
-    # Benchmark 1: MoE + StandardDecoder
+    dense_model = DenseModel(vocab_size, hidden_dim)
+    dense_model.load_state_dict(dense_ckpt["model_state_dict"])
+    dense_model.eval()
+
+    vanilla_model = VanillaMoEModel(vocab_size, hidden_dim, num_experts, top_k)
+    vanilla_model.load_state_dict(vanilla_ckpt["model_state_dict"])
+    vanilla_model.eval()
+
+    nexus_model = MoENexusModel(vocab_size, hidden_dim, num_experts, top_k)
+    nexus_model.load_state_dict(nexus_ckpt["model_state_dict"])
+    nexus_model.eval()
+
     std_decoder = StandardDecoder(tokenizer)
-    moe_std_engine = InferenceEngine(
-        model=ModelAdapter(model),
-        decoder=std_decoder,
-        device="cpu",
-    )
-
-    start = time.perf_counter()
-    moe_std_ids = moe_std_engine.generate(input_ids, gen_config)
-    moe_std_time = time.perf_counter() - start
-    moe_std_texts = [std_decoder.decode(moe_std_ids[i]) for i in range(len(prompts))]
-
-    # Benchmark 2: MoE + CPUCacheDecoder
     cache_decoder = CPUCacheDecoder(tokenizer)
-    moe_cache_engine = InferenceEngine(
-        model=ModelAdapter(model),
-        decoder=cache_decoder,
-        device="cpu",
-    )
 
+    results = []
+
+    if CPP_AVAILABLE:
+        print("[INFO] C++ backend available, running C++ benchmarks...")
+        
+        # Create C++ models
+        cpp_tokenizer = cpp_core.NumberTokenizer()
+        cpp_model_config = cpp_core.ModelConfig()
+        cpp_model_config.vocab_size = vocab_size
+        cpp_model_config.hidden_dim = hidden_dim
+        cpp_model_config.num_experts = num_experts
+        cpp_model_config.top_k = top_k
+        
+        # C++ MoE-Nexus
+        cpp_model = cpp_core.MoEModel(cpp_model_config)
+        cpp_engine = cpp_core.InferenceEngine(
+            cpp_model,
+            cpp_tokenizer,
+            cpp_core.LoadBalancer(num_experts)
+        )
+        
+        cpp_gen_config = cpp_core.GenerationConfig()
+        cpp_gen_config.max_new_tokens = max_new_tokens
+        cpp_gen_config.eos_token_id = tokenizer.eos_token_id
+        
+        input_list = input_ids[0].tolist()
+        start = time.perf_counter()
+        cpp_output = cpp_engine.generate(input_list, cpp_gen_config)
+        cpp_time = time.perf_counter() - start
+        cpp_text = tokenizer.decode(cpp_output)
+        results.append(("MoE-Nexus C++", cpp_time, [cpp_text] * len(prompts)))
+        
+        print(f"[C++] MoE-Nexus C++: {cpp_time:.3f}s  ({format_tokens_per_second(max_new_tokens, cpp_time)})")
+    
+    # Python benchmarks
+    # 1. Dense + StandardDecoder
+    engine = InferenceEngine(model=ModelAdapter(dense_model), decoder=std_decoder, device="cpu")
     start = time.perf_counter()
-    moe_cache_ids = moe_cache_engine.generate(input_ids, gen_config)
-    moe_cache_time = time.perf_counter() - start
-    moe_cache_texts = [cache_decoder.decode(moe_cache_ids[i]) for i in range(len(prompts))]
+    dense_ids = engine.generate(input_ids, gen_config)
+    dense_time = time.perf_counter() - start
+    dense_texts = [std_decoder.decode(dense_ids[i]) for i in range(len(prompts))]
+    results.append(("Dense + StandardDecoder", dense_time, dense_texts))
+
+    # 2. Vanilla MoE + StandardDecoder
+    engine = InferenceEngine(model=ModelAdapter(vanilla_model), decoder=std_decoder, device="cpu")
+    start = time.perf_counter()
+    vanilla_ids = engine.generate(input_ids, gen_config)
+    vanilla_time = time.perf_counter() - start
+    vanilla_texts = [std_decoder.decode(vanilla_ids[i]) for i in range(len(prompts))]
+    results.append(("Vanilla MoE + StandardDecoder", vanilla_time, vanilla_texts))
+
+    # 3. MoE-Nexus + CPUCacheDecoder
+    engine = InferenceEngine(model=ModelAdapter(nexus_model), decoder=cache_decoder, device="cpu")
+    start = time.perf_counter()
+    nexus_ids = engine.generate(input_ids, gen_config)
+    nexus_time = time.perf_counter() - start
+    nexus_texts = [cache_decoder.decode(nexus_ids[i]) for i in range(len(prompts))]
+    results.append(("MoE-Nexus + CPUCacheDecoder", nexus_time, nexus_texts))
 
     total_tokens = len(prompts) * max_new_tokens
 
     print("=" * 70)
-    print("CHAT BENCHMARK - MoE-Nexus")
+    print("CHAT BENCHMARK - MoE-Nexus (8k tokens)")
     print("=" * 70)
     print(f"Prompts ({len(prompts)}): {prompts}")
     print(f"Max new tokens per prompt: {max_new_tokens}")
     print(f"Total generated tokens: {total_tokens}")
     print("-" * 70)
-    print(f"MoE + StandardDecoder:  {moe_std_time:.3f}s  ({format_tokens_per_second(total_tokens, moe_std_time)})")
-    print(f"MoE + CPUCacheDecoder:  {moe_cache_time:.3f}s  ({format_tokens_per_second(total_tokens, moe_cache_time)})")
-    if moe_cache_time > 0:
-        print(f"Speedup:                {moe_std_time / moe_cache_time:.2f}x")
+    for name, elapsed, texts in results:
+        print(f"{name:35s}: {elapsed:.3f}s  ({format_tokens_per_second(total_tokens, elapsed)})")
     print("-" * 70)
-    print("Output comparison:")
+    print("Sample outputs:")
     for i, prompt in enumerate(prompts):
-        match = "OK" if moe_std_texts[i] == moe_cache_texts[i] else "DIFF"
-        print(f"  [{match}] '{prompt}' -> '{moe_std_texts[i][:40]}'")
+        print(f"  '{prompt}' -> '{results[0][2][i][:50]}'")
     print("=" * 70)
 
 

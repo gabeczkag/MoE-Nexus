@@ -20,6 +20,7 @@ class GenerationConfig:
     do_sample: bool = True
     pad_token_id: Optional[int] = None
     eos_token_id: Optional[int] = None
+    max_steps: int = 1000
 
 
 class InferenceEngine:
@@ -45,7 +46,7 @@ class InferenceEngine:
         generated = token_ids.clone()
         past_key_values = None
 
-        for _ in range(config.max_new_tokens):
+        for step in range(config.max_new_tokens):
             model_outputs = self.model(
                 input_ids=generated[:, -1:] if past_key_values is not None else generated,
                 past_key_values=past_key_values,
@@ -74,6 +75,9 @@ class InferenceEngine:
             generated = torch.cat([generated, next_token], dim=-1)
 
             if config.eos_token_id is not None and (next_token == config.eos_token_id).any():
+                break
+
+            if step >= config.max_steps:
                 break
 
         return generated

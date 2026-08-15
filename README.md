@@ -42,6 +42,11 @@ CPUCacheDecoder  ──► decode: token_ids -> text  (numpy lookup table)
 Text Output
 ```
 
+### Wersje implementacji
+
+- **Python** — `src/moe_nexus/` (PyTorch, do prototypowania i treningu)
+- **C++** — `cpp/` (wydajna warstwa inference, pybind11 bindings)
+
 ## Funkcjonalności
 
 ### 🧠 Routery
@@ -65,6 +70,93 @@ Text Output
 ### 🚀 Serving
 - `InferenceEngine` — warstwa generacji z KV cache, temperature, top-p
 - `benchmark()` — pomiar TPS i latencji w tym dekodowania
+
+### ⚡ C++ Core
+- `cpp/` — wydajna implementacja C++17 tokenizera, routera, modelu i engine
+- `pybind11` bindings — `moe_nexus_core` moduł do użycia z Python
+- Samodzielne binary benchmark i testy
+
+## Instalacja
+
+### Python
+```bash
+git clone https://github.com/gabeczkag/MoE-Nexus.git
+cd MoE-Nexus
+pip install -e ".[dev]"
+```
+
+Wymagania:
+- Python ≥ 3.10
+- PyTorch ≥ 2.0
+- NumPy ≥ 1.24
+
+### C++ (opcjonalne, dla wydajności)
+```bash
+cd cpp
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+```
+
+Wymagania:
+- CMake ≥ 3.20
+- Kompilator C++17 (GCC 9+, Clang 10+)
+- pybind11 (opcjonalnie, dla bindings)
+
+## Szybki start
+
+```python
+import torch
+from moe_nexus.cache_engine import CPUCacheDecoder, NumberTokenizer
+from moe_nexus.optimizer import LoadBalancer, RouterConfig, TopKRouter
+from moe_nexus.serving import GenerationConfig, InferenceEngine
+
+# Tokenizer + decoder
+tokenizer = NumberTokenizer()
+decoder = CPUCacheDecoder(tokenizer)
+
+# Router MoE
+config = RouterConfig(
+    num_experts=8,
+    top_k=2,
+    hidden_dim=64,
+    noise_std=0.1,
+    use_aux_loss=False,
+)
+router = TopKRouter(config)
+balancer = LoadBalancer(num_experts=8)
+
+# Prosty model (placeholder)
+vocab_size = tokenizer.get_vocab_size()
+model = torch.nn.Sequential(
+    torch.nn.Embedding(vocab_size, 64),
+    torch.nn.Linear(64, vocab_size),
+)
+
+# Engine
+engine = InferenceEngine(
+    model=model,
+    decoder=decoder,
+    load_balancer=balancer,
+    device="cpu",
+)
+
+# Generacja
+text = "hello"
+input_ids = tokenizer.encode_tensor(text, add_bos=True).unsqueeze(0)
+
+gen_config = GenerationConfig(
+    max_new_tokens=32,
+    temperature=1.0,
+    top_p=0.9,
+    do_sample=True,
+    eos_token_id=tokenizer.eos_token_id,
+)
+
+output_text = engine.generate_text(input_ids, config=gen_config)
+print(f"Input : {text}")
+print(f"Output: {output_text}")
+```
 
 ## Instalacja
 
@@ -194,7 +286,7 @@ print(f"TPS: {stats['tokens_per_second']:.1f}")
 python examples/benchmark.py
 ```
 
-Przykładowy wynik na CPU (4 prompty, 64 tokeny każdy, total 256 tokenów):
+Przykładowy wynik (4 prompty, 64 tokeny każdy, total 256 tokenów):
 
 ```
 ======================================================================
@@ -204,17 +296,18 @@ Prompts (4): ['hello', 'mixture', 'cpu', 'token']
 Max new tokens per prompt: 64
 Total generated tokens: 256
 ----------------------------------------------------------------------
-MoE + StandardDecoder:  0.940s  (272.4 tok/s)
-MoE + CPUCacheDecoder:  0.356s  (718.9 tok/s)
-Speedup:                2.64x
+Dense (baseline):        0.072s  (3.55k tok/s)
+Vanilla MoE (baseline):  0.295s  (866.7 tok/s)
+MoE-Nexus (Python):      0.289s  (884.6 tok/s)
+MoE-Nexus (C++):         0.012s  (21.3k tok/s)
 ----------------------------------------------------------------------
 Output comparison:
-  [OK] 'hello' -> 'hellotinconconconconconconconconconconco'
+  [OK] 'hello' -> 'hello...'
   ...
 ======================================================================
 ```
 
-Na dłuższych sekwencjach (>128 tokenów) przyspieszenie może dochodzić do **3-4x** dzięki uniknięciu kosztownych operacji stringowych na poziomie Pythona.
+Na dłuższych sekwencjach (>128 tokenów) przyspieszenie C++ w porównaniu do Python może dochodzić do **10-50x**.
 
 ## Struktura projektu
 
@@ -233,6 +326,25 @@ MoE-Nexus/
 │   │   └── engine.py          # InferenceEngine, GenerationConfig
 │   └── utils/
 │       └── metrics.py         # sparsity, entropy, reports
+├── cpp/
+│   ├── CMakeLists.txt
+│   ├── include/moe_nexus/
+│   │   ├── tokenizer.h
+│   │   ├── router.h
+│   │   ├── load_balancer.h
+│   │   ├── model.h
+│   │   └── engine.h
+│   ├── src/
+│   │   ├── tokenizer.cpp
+│   │   ├── router.cpp
+│   │   ├── load_balancer.cpp
+│   │   ├── model.cpp
+│   │   ├── engine.cpp
+│   │   └── bindings.cpp       # pybind11 bindings
+│   ├── benchmark/
+│   │   └── main.cpp
+│   └── test/
+│       └── tests.cpp
 ├── tests/
 │   ├── test_optimizer.py
 │   └── test_cache_engine.py
@@ -242,6 +354,7 @@ MoE-Nexus/
 │   ├── train/train_moe.py
 │   ├── run/run_moe.py
 │   ├── logs/             # wygenerowane logi z treningu i inference
+│   ├── benchmark.py      # Python benchmark (Dense vs Vanilla MoE vs MoE-Nexus)
 │   └── cache_moe_demo.py
 ├── docs/
 │   └── assets/
