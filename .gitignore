@@ -14,3 +14,4 @@ examples/model/*.pt
 .DS_Store
 *.swp
 *.swo
+examples/dataset/smollm_corpus.txt
